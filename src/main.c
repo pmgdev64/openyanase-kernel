@@ -35,7 +35,7 @@ void execute_command(char *input) {
         app_echo(input + 5); // Nhảy qua 5 ký tự đầu để lấy phần message
     }
     else if (vga_strncmp(input, "hello", 1) == 0) {
-        vga_puts("Hello bro! Welcome to Gemini OS.\n", LIGHT_GREEN);
+        vga_puts("openYanase v0.0.1 build 0904 - April 12, 2026\n", LIGHT_GREEN);
     }
     else if (vga_strncmp(input, "reboot", 0) == 0) {
         vga_puts("Rebooting...", LIGHT_RED);
@@ -89,7 +89,7 @@ void kernel_main() {
     gdt_install();
     vga_init();
     
-    vga_puts("--- Gemini OS Shell v0.1 ---\n", LIGHT_CYAN);
+    vga_puts("openYanase kernel v0.0.1 build 0904\n", LIGHT_CYAN);
     vga_puts("> ", WHITE);
 
     while(1) {
