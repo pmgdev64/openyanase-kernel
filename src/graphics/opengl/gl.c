@@ -1,40 +1,134 @@
-// src/graphics/opengl/gl.c
 #include "gl.h"
-#include <math.h>
-#include "../../drivers/gpu/adl.h" // Interface điều khiển driver .adl
-#include "../../kernel/mm/memory.h" // Quản lý 4GB RAM
 
 /* -------------------------------------------------------------------------- */
-/* INTERNAL STATE MACHINE                                                     */
+/* INTERNAL MATH & DEFINITIONS (Thay thế math.h)                              */
+/* -------------------------------------------------------------------------- */
+
+#define PI 3.14159265358979323846f
+
+// Hàm tính sin/cos sơ khai bằng chuỗi Taylor để không phụ thuộc math.h
+static float yanase_sin(float x) {
+    float res = x;
+    float term = x;
+    for (int i = 1; i < 5; i++) {
+        term *= -x * x / (2 * i * (2 * i + 1));
+        res += term;
+    }
+    return res;
+}
+
+static float yanase_cos(float x) {
+    return yanase_sin(x + (PI / 2.0f));
+}
+
+/* -------------------------------------------------------------------------- */
+/* INTERNAL CONTEXT STRUCTURE                                                 */
 /* -------------------------------------------------------------------------- */
 
 typedef struct {
     float m[16];
-} matrix_t;
+} yanase_matrix_t;
 
 typedef struct {
     uint32_t matrix_mode;
-    matrix_t projection_matrix;
-    matrix_t modelview_stack[32]; // Stack ma trận độ sâu 32
+    yanase_matrix_t projection_matrix;
+    yanase_matrix_t modelview_stack[16]; // Độ sâu stack tạm thời là 16
     uint32_t modelview_ptr;
-
-    uint32_t active_texture;
-    uint8_t depth_test_enabled;
-    uint8_t lighting_enabled;
 
     float current_color[4];
     float current_tex_coord[2];
-    float current_normal[3];
+    uint32_t active_texture;
+    
+    // Flag trạng thái
+    uint8_t depth_test;
+    uint8_t lighting;
+} GL_Core_Context;
 
-    uint32_t current_program;
-} GL_Context;
+// Khởi tạo Context tĩnh cho bản đầu tiên
+static GL_Core_Context static_ctx;
+static GL_Core_Context* ctx = &static_ctx;
 
-// Mỗi tiến trình .abp sẽ có một Context riêng (Thread-local hoặc Context-switch handle)
-static GL_Context* ctx = NULL;
+/* Helper: Đưa ma trận về đơn vị */
+static void load_identity_internal(yanase_matrix_t* mat) {
+    for (int i = 0; i < 16; i++) {
+        mat->m[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    }
+}
 
-/* Helper: Reset ma trận về đơn vị (Identity) */
-static void mat_identity(matrix_t* mat) {
-    for (int i = 0; i < 16; i++) mat->m[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+/* -------------------------------------------------------------------------- */
+/* MATRIX OPERATIONS                                                          */
+/* -------------------------------------------------------------------------- */
+
+void glMatrixMode(uint32_t mode) {
+    ctx->matrix_mode = mode;
+}
+
+void glLoadIdentity(void) {
+    if (ctx->matrix_mode == GL_PROJECTION) {
+        load_identity_internal(&ctx->projection_matrix);
+    } else {
+        load_identity_internal(&ctx->modelview_stack[ctx->modelview_ptr]);
+    }
+}
+
+void glTranslatef(float x, float y, float z) {
+    yanase_matrix_t* mat = (ctx->matrix_mode == GL_PROJECTION) ? 
+                            &ctx->projection_matrix : 
+                            &ctx->modelview_stack[ctx->modelview_ptr];
+    
+    // Tịnh tiến ma trận cột cuối (Column-major)
+    mat->m[12] += mat->m[0] * x + mat->m[4] * y + mat->m[8] * z;
+    mat->m[13] += mat->m[1] * x + mat->m[5] * y + mat->m[9] * z;
+    mat->m[14] += mat->m[2] * x + mat->m[6] * y + mat->m[10] * z;
+}
+
+/* -------------------------------------------------------------------------- */
+/* RENDERING STUBS (Đợi liên kết với .adl)                                    */
+/* -------------------------------------------------------------------------- */
+
+void glBegin(uint32_t mode) {
+    // Bản đầu tiên: Ghi log hoặc gửi tín hiệu ra cổng I/O giả định
+    // Sau này sẽ thay bằng: adl_graphics_begin(mode);
+}
+
+void glVertex3f(float x, float y, float z) {
+    // Logic: Tạm thời chỉ in tọa độ hoặc lưu vào một buffer nội bộ nhỏ
+    // glVertex sẽ nhân tọa độ (x,y,z) với modelview_matrix tại đây
+}
+
+void glEnd(void) {
+    // Gửi lệnh flush dữ liệu ra màn hình
+}
+
+/* -------------------------------------------------------------------------- */
+/* STATE & MEMORY STUBS                                                       */
+/* -------------------------------------------------------------------------- */
+
+void glEnable(uint32_t cap) {
+    if (cap == GL_DEPTH_TEST) ctx->depth_test = 1;
+    if (cap == GL_LIGHTING)   ctx->lighting = 1;
+    // Tạm thời chưa có .adl nên chỉ set flag trong Context
+}
+
+void glClearColor(float r, float g, float b, float a) {
+    ctx->current_color[0] = r;
+    ctx->current_color[1] = g;
+    ctx->current_color[2] = b;
+    ctx->current_color[3] = a;
+}
+
+void glClear(uint32_t mask) {
+    // Logic: Xóa bộ đệm khung (Framebuffer) tại địa chỉ 0xA0000 hoặc GOP
+}
+
+/* --- OpenGL 2.0 Shader Stubs --- */
+uint32_t glCreateShader(uint32_t type) {
+    return 1; // Trả về ID giả định
+}
+
+void glUseProgram(uint32_t program) {
+    // Placeholder cho logic shader sau này
+}    for (int i = 0; i < 16; i++) mat->m[i] = (i % 5 == 0) ? 1.0f : 0.0f;
 }
 
 /* -------------------------------------------------------------------------- */
