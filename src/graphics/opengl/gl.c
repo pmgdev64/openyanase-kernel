@@ -1,40 +1,128 @@
 #include "gl.h"
+#include "../types.h"
+
+/* Extern các hàm từ vesa.c */
+extern void vesa_put_pixel(uint16_t x, uint16_t y, uint32_t color);
+extern void vesa_draw_line(int x0, int y0, int x1, int y1, uint32_t color);
+extern void vesa_clear(uint32_t color);
 
 /* -------------------------------------------------------------------------- */
-/* INTERNAL MATH & DEFINITIONS (Thay thế math.h)                              */
+/* MATH CORE                                                                  */
 /* -------------------------------------------------------------------------- */
 
-#define PI 3.14159265358979323846f
+#define PI 3.14159265f
 
-// Hàm tính sin/cos sơ khai bằng chuỗi Taylor để không phụ thuộc math.h
 static float yanase_sin(float x) {
-    float res = x;
-    float term = x;
+    float res = x, term = x;
     for (int i = 1; i < 5; i++) {
         term *= -x * x / (2 * i * (2 * i + 1));
         res += term;
     }
     return res;
 }
+static float yanase_cos(float x) { return yanase_sin(x + (PI / 2.0f)); }
 
-static float yanase_cos(float x) {
-    return yanase_sin(x + (PI / 2.0f));
+// Nhân ma trận 4x4 (A = A * B) - Column Major
+static void mat_mul(float* A, const float* B) {
+    float res[16];
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            res[i * 4 + j] = A[i * 4 + 0] * B[0 * 4 + j] +
+                             A[i * 4 + 1] * B[1 * 4 + j] +
+                             A[i * 4 + 2] * B[2 * 4 + j] +
+                             A[i * 4 + 3] * B[3 * 4 + j];
+        }
+    }
+    for (int i = 0; i < 16; i++) A[i] = res[i];
 }
 
 /* -------------------------------------------------------------------------- */
-/* INTERNAL CONTEXT STRUCTURE                                                 */
+/* RENDERING PIPELINE STORAGE                                                 */
 /* -------------------------------------------------------------------------- */
 
-typedef struct {
-    float m[16];
-} yanase_matrix_t;
+typedef struct { float x, y, z; } vertex_t;
+static vertex_t vertex_buffer[64];
+static uint32_t vertex_count = 0;
+static uint32_t current_mode = 0;
 
-typedef struct {
-    uint32_t matrix_mode;
-    yanase_matrix_t projection_matrix;
-    yanase_matrix_t modelview_stack[16]; // Độ sâu stack tạm thời là 16
-    uint32_t modelview_ptr;
+/* -------------------------------------------------------------------------- */
+/* MATRIX OPERATIONS                                                          */
+/* -------------------------------------------------------------------------- */
 
+void glRotatef(float angle, float x, float y, float z) {
+    float rad = angle * (PI / 180.0f);
+    float s = yanase_sin(rad);
+    float c = yanase_cos(rad);
+    float m[16] = {0};
+    load_identity_internal((yanase_matrix_t*)m);
+
+    // Ma trận xoay cơ bản (Simplified)
+    if (x > 0) { m[5]=c; m[6]=s; m[9]=-s; m[10]=c; }
+    else if (y > 0) { m[0]=c; m[2]=-s; m[8]=s; m[10]=c; }
+    else if (z > 0) { m[0]=c; m[1]=s; m[4]=-s; m[5]=c; }
+
+    float* target = (ctx->matrix_mode == GL_PROJECTION) ? 
+                     ctx->projection_matrix.m : ctx->modelview_stack[ctx->modelview_ptr].m;
+    mat_mul(target, m);
+}
+
+/* -------------------------------------------------------------------------- */
+/* CORE API                                                                   */
+/* -------------------------------------------------------------------------- */
+
+void glBegin(uint32_t mode) {
+    current_mode = mode;
+    vertex_count = 0;
+}
+
+void glVertex3f(float x, float y, float z) {
+    if (vertex_count >= 64) return;
+
+    // Nhân với Modelview Matrix hiện tại
+    float* m = ctx->modelview_stack[ctx->modelview_ptr].m;
+    vertex_buffer[vertex_count].x = x*m[0] + y*m[4] + z*m[8] + m[12];
+    vertex_buffer[vertex_count].y = x*m[1] + y*m[5] + z*m[9] + m[13];
+    vertex_buffer[vertex_count].z = x*m[2] + y*m[6] + z*m[10] + m[14];
+    vertex_count++;
+}
+
+void glEnd(void) {
+    uint32_t color = (uint32_t)(ctx->current_color[0]*255)<<16 | 
+                     (uint32_t)(ctx->current_color[1]*255)<<8 | 
+                     (uint32_t)(ctx->current_color[2]*255);
+
+    int px[64], py[64];
+    for (uint32_t i = 0; i < vertex_count; i++) {
+        // Orthographic projection đơn giản xuống 1024x768
+        px[i] = (int)((vertex_buffer[i].x + 1.0f) * 512.0f);
+        py[i] = (int)((1.0f - vertex_buffer[i].y) * 384.0f);
+    }
+
+    // Rasterization
+    if (current_mode == GL_TRIANGLES) {
+        for (uint32_t i = 0; i < vertex_count - 2; i += 3) {
+            vesa_draw_line(px[i], py[i], px[i+1], py[i+1], color);
+            vesa_draw_line(px[i+1], py[i+1], px[i+2], py[i+2], color);
+            vesa_draw_line(px[i+2], py[i+2], px[i], py[i], color);
+        }
+    } else if (current_mode == GL_QUADS) {
+        for (uint32_t i = 0; i < vertex_count - 3; i += 4) {
+            vesa_draw_line(px[i], py[i], px[i+1], py[i+1], color);
+            vesa_draw_line(px[i+1], py[i+1], px[i+2], py[i+2], color);
+            vesa_draw_line(px[i+2], py[i+2], px[i+3], py[i+3], color);
+            vesa_draw_line(px[i+3], py[i+3], px[i], py[i], color);
+        }
+    }
+}
+
+void glClear(uint32_t mask) {
+    if (mask & GL_COLOR_BUFFER_BIT) {
+        uint32_t c = (uint32_t)(ctx->current_color[0]*255)<<16 | 
+                     (uint32_t)(ctx->current_color[1]*255)<<8 | 
+                     (uint32_t)(ctx->current_color[2]*255);
+        vesa_clear(c);
+    }
+}
     float current_color[4];
     float current_tex_coord[2];
     uint32_t active_texture;
