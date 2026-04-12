@@ -85,4 +85,4 @@ qemu-system-x86_64 -kernel kernel.bin
 ---
 
 **Author**: pmgdev64  
-**License**: MIT
+**License**: GNU General public license v3.0
