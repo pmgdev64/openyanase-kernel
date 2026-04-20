@@ -3,29 +3,37 @@
 
 #include "types.h"
 
-/* * Mẹo cho IntelliSense: Khi VS Code quét file, nó sẽ thấy các hàm trống 
- * và không báo lỗi cú pháp. Khi GCC biên dịch, nó sẽ dùng đoạn asm thật.
- */
+/* Ép GCC luôn luôn inline hàm này kể cả khi không bật tối ưu hóa (-O0) */
+#define FINLINE static inline __attribute__((always_inline))
+
 #ifdef __INTELLISENSE__
-static inline void outb(uint16_t port, uint8_t val) { (void)port; (void)val; }
-static inline uint8_t inb(uint16_t port) { (void)port; return 0; }
+FINLINE void outb(uint16_t port, uint8_t val) { (void)port; (void)val; }
+FINLINE void outw(uint16_t port, uint16_t val) { (void)port; (void)val; }
+FINLINE uint8_t inb(uint16_t port) { (void)port; return 0; }
+FINLINE uint16_t inw(uint16_t port) { (void)port; return 0; }
 #else
 
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ __volatile__ (
-        "outb %0, %1" 
-        : 
-        : "a"(val), "Nd"(port)
-    );
+/* Output 8-bit (Byte) */
+FINLINE void outb(uint16_t port, uint8_t val) {
+    __asm__ __volatile__ ( "outb %b0, %w1" : : "a"(val), "Nd"(port) );
 }
 
-static inline uint8_t inb(uint16_t port) {
+/* Output 16-bit (Word) */
+FINLINE void outw(uint16_t port, uint16_t val) {
+    __asm__ __volatile__ ( "outw %w0, %w1" : : "a"(val), "Nd"(port) );
+}
+
+/* Input 8-bit (Byte) */
+FINLINE uint8_t inb(uint16_t port) {
     uint8_t ret;
-    __asm__ __volatile__ (
-        "inb %1, %0"
-        : "=a"(ret)
-        : "Nd"(port)
-    );
+    __asm__ __volatile__ ( "inb %w1, %b0" : "=a"(ret) : "Nd"(port) );
+    return ret;
+}
+
+/* Input 16-bit (Word) - Quan trọng cho ATAPI */
+FINLINE uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    __asm__ __volatile__ ( "inw %w1, %w0" : "=a"(ret) : "Nd"(port) );
     return ret;
 }
 
