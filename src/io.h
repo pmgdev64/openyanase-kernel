@@ -3,6 +3,8 @@
 
 #include "types.h"
 
+#include <stdint.h>
+
 /* Ép GCC luôn luôn inline hàm này kể cả khi không bật tối ưu hóa (-O0) */
 #define FINLINE static inline __attribute__((always_inline))
 
@@ -22,7 +24,6 @@ FINLINE void outb(uint16_t port, uint8_t val) {
 FINLINE void outw(uint16_t port, uint16_t val) {
     __asm__ __volatile__ ( "outw %w0, %w1" : : "a"(val), "Nd"(port) );
 }
-
 /* Input 8-bit (Byte) */
 FINLINE uint8_t inb(uint16_t port) {
     uint8_t ret;

@@ -39,6 +39,9 @@ typedef struct {
 // Chỉ khai báo extern, không khởi tạo giá trị ở đây
 extern multiboot_info_t* global_mbi;
 
+// Trong vesa.h hoặc đầu file main.c
+uint32_t vesa_get_pixel(int x, int y);
+
 // --- PROTOTYPES ---
 void init_vesa_mode(multiboot_info_t* mbi);
 void vesa_init(uint32_t fb_addr, uint16_t w, uint16_t h, uint32_t p);

@@ -25,4 +25,8 @@ typedef struct {
     uint32_t important_colors;
 } __attribute__((packed)) bmp_info_header_t;
 
+int bmp_parse_to_buffer(uint8_t *data, uint32_t size,
+                        uint32_t *out_pixels, uint8_t *out_mask,
+                        int expected_w, int expected_h);
+
 #endif

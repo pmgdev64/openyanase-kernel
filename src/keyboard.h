@@ -19,7 +19,7 @@ void keyboard_handler() {
         if (!(scancode & 0x80)) {
             char c = kbd_us[scancode];
             if (c > 0) {
-                vga_putc(c, LIGHT_GREEN);
+                vga_putc(c, LIGHT_GREY);
             }
         }
     }

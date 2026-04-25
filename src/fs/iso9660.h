@@ -3,6 +3,10 @@
 
 #include "types.h" // PHẢI CÓ DÒNG NÀY
 
+// Thêm các define quan trọng
+#define ISO_PVD_LBA 16
+#define ISO_SECTOR_SIZE 2048
+
 typedef struct {
     uint8_t type;                       // 1 = PVD
     char id[5];                         // "CD001"
@@ -46,5 +50,12 @@ typedef struct {
     uint8_t file_id_length;             // Độ dài tên file
     char file_id[1];                    // Tên file thực tế (địa chỉ bắt đầu)
 } __attribute__((packed)) iso_directory_record_t;
+
+// THÊM CÁC DÒNG NÀY VÀO CUỐI FILE H
+int iso9660_mount();
+uint32_t iso9660_get_size(const char* path);
+// Đảm bảo trong file .h khai báo như thế này:
+void* iso9660_read_file(const char* path, uint8_t* buffer, uint32_t* out_size);
+void iso_list_directory(const char* path);
 
 #endif // PHẢI CÓ DÒNG NÀY Ở CUỐI FILE

@@ -2,129 +2,85 @@
 #include "io.h"
 #include "vga_buffer.h"
 
-#define ATAPI_DATA       0x1F0
-#define ATAPI_ERROR      0x1F1
-#define ATAPI_FEATURES   0x1F1
-#define ATAPI_IREASON    0x1F2
-#define ATAPI_SAMTAG     0x1F2
-#define ATAPI_COUNT_LOW  0x1F4
-#define ATAPI_COUNT_HIGH 0x1F5
-#define ATAPI_DRIVE_SEL  0x1F6
-#define ATAPI_COMMAND    0x1F7
-#define ATAPI_STATUS     0x1F7
+// Biến toàn cục để lưu bus port sau khi mount thành công
+static uint16_t current_atapi_base = 0x1F0; 
 
-// Sector size của ISO9660 luôn là 2048 bytes
 #define ISO_SECTOR_SIZE 2048
 
-// Trình điều khiển ATAPI đơn giản để đọc 1 sector (LBA)
-void atapi_read_sector(uint32_t lba, uint8_t* buffer) {
-    // 1. Chọn ổ đĩa (0xA0 là Master, 0xB0 là Slave)
-    outb(ATAPI_DRIVE_SEL, 0xA0); 
-    
-    // 2. Thiết lập chuẩn ATAPI (không dùng DMA)
-    outb(ATAPI_FEATURES, 0);
-    outb(ATAPI_COUNT_LOW, (ISO_SECTOR_SIZE & 0xFF));
-    outb(ATAPI_COUNT_HIGH, (ISO_SECTOR_SIZE >> 8));
-    
-    // 3. Gửi lệnh ATAPI Packet
-    outb(ATAPI_COMMAND, 0xA0); 
+/* --- ATAPI LOW LEVEL DRIVER --- */
 
-    // Chờ ổ đĩa sẵn sàng nhận packet
-    while (inb(ATAPI_STATUS) & 0x80); // Busy bit
-    while (!(inb(ATAPI_STATUS) & 0x08)); // DRQ bit
-
-    // 4. Gửi SCSI Packet: Lệnh READ (12) - mã 0xA8
-    uint8_t packet[12] = {0};
-    packet[0] = 0xA8; 
-    packet[2] = (lba >> 24) & 0xFF;
-    packet[3] = (lba >> 16) & 0xFF;
-    packet[4] = (lba >> 8) & 0xFF;
-    packet[5] = lba & 0xFF;
-    packet[9] = 1; // Đọc 1 sector
-
-    uint16_t* p = (uint16_t*)packet;
-    for (int i = 0; i < 6; i++) {
-        outw(ATAPI_DATA, p[i]);
+// Đợi bit trạng thái của Controller
+static int atapi_wait_status(uint16_t base, uint8_t mask, uint8_t value, uint32_t timeout) {
+    while (timeout--) {
+        uint8_t status = inb(base + 7);
+        if ((status & mask) == value) return 1;
     }
+    return 0;
+}
 
-    // 5. Chờ dữ liệu trả về
-    while (inb(ATAPI_STATUS) & 0x80);
-    while (!(inb(ATAPI_STATUS) & 0x08));
+// Đọc 1 sector (2048 bytes) từ đĩa quang
+void atapi_read_sector(uint32_t lba, uint8_t* buffer) {
+    uint16_t base = current_atapi_base;
 
-    // 6. Đọc dữ liệu từ Data Port vào buffer
+    // 1. Chọn Drive và đợi hết BSY
+    outb(base + 6, 0xA0); 
+    atapi_wait_status(base, 0x80, 0x00, 1000000);
+
+    // 2. Thiết lập kích thước nhận dữ liệu (2048 bytes)
+    outb(base + 1, 0); // Features
+    outb(base + 4, (ISO_SECTOR_SIZE & 0xFF));
+    outb(base + 5, (ISO_SECTOR_SIZE >> 8));
+    outb(base + 7, 0xA0); // Lệnh ATAPI Packet
+
+    // 3. Đợi DRQ để gửi SCSI Packet
+    atapi_wait_status(base, 0x08, 0x08, 1000000);
+
+    uint8_t scsi_packet[12] = {0};
+    scsi_packet[0] = 0xA8;               // READ(12)
+    scsi_packet[2] = (lba >> 24) & 0xFF; // MSB của LBA
+    scsi_packet[3] = (lba >> 16) & 0xFF;
+    scsi_packet[4] = (lba >> 8) & 0xFF;
+    scsi_packet[5] = lba & 0xFF;         // LSB của LBA
+    scsi_packet[9] = 1;                  // Đọc 1 sector
+
+    // Gửi 12 bytes packet (6 words)
+    uint16_t* ptr = (uint16_t*)scsi_packet;
+    for (int i = 0; i < 6; i++) outw(base, ptr[i]);
+
+    // 4. Đợi Controller xử lý xong và có dữ liệu (DRQ)
+    atapi_wait_status(base, 0x80, 0x00, 1000000);
+    atapi_wait_status(base, 0x08, 0x08, 1000000);
+
+    // 5. Đọc dữ liệu từ Data Port (ISO_SECTOR_SIZE / 2 = 1024 words)
     uint16_t* b = (uint16_t*)buffer;
-    for (int i = 0; i < (ISO_SECTOR_SIZE / 2); i++) {
-        b[i] = inw(ATAPI_DATA);
+    for (int i = 0; i < 1024; i++) {
+        b[i] = inw(base);
     }
 }
 
-// Hàm so sánh tên file (ISO9660 thường có hậu tố ;1)
+/* --- ISO9660 HELPERS --- */
+
 static int filename_match(const char* target, const char* iso_name, uint8_t len) {
     for (int i = 0; i < len; i++) {
-        if (iso_name[i] == ';') break; // Bỏ qua version ;1
+        if (iso_name[i] == ';') break; // Bỏ qua version số của ISO9660
         if (target[i] != iso_name[i]) return 0;
     }
     return 1;
 }
 
-uint32_t iso9660_get_size(const char* path) {
-    // Logic tìm size file
-    return 0; 
-}
+static int find_file_record(const char* path, iso_directory_record_t* out_rec) {
+    static uint8_t buf[ISO_SECTOR_SIZE];
+    const char* filename = (path[0] == '/') ? path + 1 : path;
 
-void iso9660_read_file(const char* path, uint8_t* buffer) {
-    // Logic đọc file
-}
-
-void iso_list_directory(const char* path) {
-    uint8_t buf[ISO_SECTOR_SIZE];
-    
-    // Đọc PVD tại Sector 16
+    // Đọc Primary Volume Descriptor (Sector 16)
     atapi_read_sector(16, buf);
     iso_pvd_t* pvd = (iso_pvd_t*)buf;
-
-    if (pvd->id[0] != 'C' || pvd->id[1] != 'D') {
-        vga_puts("Error: Not a valid ISO9660 disk.\n", 0x0C);
-        return;
-    }
-
-    // Lấy Root Directory Record
+    
+    // Lấy bản ghi thư mục gốc
     iso_directory_record_t* root = (iso_directory_record_t*)pvd->root_directory_record;
     uint32_t root_lba = root->extent_lba;
 
-    // Đọc sector của Root Directory
-    atapi_read_sector(root_lba, buf);
-    
-    vga_puts("Listing Files in Root:\n", 0x0B);
-
-    uint32_t offset = 0;
-    while (offset < ISO_SECTOR_SIZE) {
-        iso_directory_record_t* rec = (iso_directory_record_t*)&buf[offset];
-        if (rec->length == 0) break;
-
-        // In tên file (file_id)
-        if (rec->file_id[0] == 0) vga_puts(".", 0x07);
-        else if (rec->file_id[0] == 1) vga_puts("..", 0x07);
-        else {
-            for (int i = 0; i < rec->file_id_length; i++) {
-                vga_putc(rec->file_id[i], 0x07);
-            }
-        }
-        vga_puts("  ", 0x07);
-
-        offset += rec->length;
-    }
-    vga_puts("\n", 0x07);
-}
-
-void* iso_load_file(const char* filename) {
-    uint8_t buf[ISO_SECTOR_SIZE];
-    atapi_read_sector(16, buf);
-    iso_pvd_t* pvd = (iso_pvd_t*)buf;
-
-    iso_directory_record_t* root = (iso_directory_record_t*)pvd->root_directory_record;
-    uint32_t root_lba = root->extent_lba;
-
+    // Đọc sector chứa Root Directory
     atapi_read_sector(root_lba, buf);
 
     uint32_t offset = 0;
@@ -133,10 +89,128 @@ void* iso_load_file(const char* filename) {
         if (rec->length == 0) break;
 
         if (filename_match(filename, rec->file_id, rec->file_id_length)) {
-            // Found it! Trả về LBA của file (để hàm bên ngoài tự load tiếp tùy dung lượng)
-            return (void*)rec->extent_lba;
+            // Sao chép bản ghi tìm thấy
+            for(int i=0; i < rec->length; i++) ((uint8_t*)out_rec)[i] = buf[offset + i];
+            return 1;
         }
         offset += rec->length;
     }
-    return (void*)0;
+    return 0;
+}
+
+/* --- PUBLIC API --- */
+int iso9660_mount() {
+    uint16_t bus_ports[] = {0x1F0, 0x170};
+    uint8_t drives[] = {0xA0, 0xB0};
+
+    vga_puts("FS: Scanning ATAPI devices...\n", 0x07);
+
+    for (int b = 0; b < 2; b++) {
+        uint16_t base = bus_ports[b];
+        for (int d = 0; d < 2; d++) {
+            // 1. Chọn Drive Master/Slave
+            outb(base + 6, drives[d]);
+            for(int i=0; i<1000; i++) inb(base + 7); // Delay
+
+            // 2. Gửi lệnh Soft Reset (ATAPI cần reset để báo Signature chính xác)
+            outb(base + 7, 0x08); 
+            for(int i=0; i<2000; i++) inb(base + 7);
+
+            // 3. Đợi Busy xóa (BSY=0, DRQ=0)
+            uint32_t timeout = 100000;
+            while ((inb(base + 7) & 0x80) && --timeout);
+
+            // 4. Đọc Signature từ LBA Mid và LBA High
+            uint8_t cl = inb(base + 4); 
+            uint8_t ch = inb(base + 5); 
+
+            // ATAPI Signature: CL=0x14, CH=0xEB
+            if (cl == 0x14 && ch == 0xEB) {
+                current_atapi_base = base;
+                vga_puts("FS: ATAPI Found on ", 0x0A);
+                vga_puts(base == 0x1F0 ? "Primary " : "Secondary ", 0x0A);
+                vga_puts(drives[d] == 0xA0 ? "Master\n" : "Slave\n", 0x0A);
+                return 1;
+            }
+        }
+    }
+    vga_puts("FS Error: No ATAPI CD-ROM detected.\n", 0x0C);
+    return 0;
+}
+
+void iso_list_directory(const char* path) {
+    static uint8_t buf[ISO_SECTOR_SIZE];
+    
+    // Đọc PVD để tìm Root Directory
+    atapi_read_sector(16, buf);
+    iso_pvd_t* pvd = (iso_pvd_t*)buf;
+
+    if (pvd->type != 1 || pvd->id[0] != 'C' || pvd->id[1] != 'D') {
+        vga_puts("FS Error: Invalid ISO9660 PVD\n", 0x0C);
+        return;
+    }
+
+    iso_directory_record_t* root = (iso_directory_record_t*)pvd->root_directory_record;
+    uint32_t current_lba = root->extent_lba;
+    uint32_t total_len = root->data_length;
+    
+    vga_puts("Index of /:\n", 0x0B);
+
+    // Duyệt qua từng sector nếu thư mục lớn
+    for (uint32_t s = 0; s < (total_len + 2047) / 2048; s++) {
+        atapi_read_sector(current_lba + s, buf);
+        uint32_t offset = 0;
+
+        while (offset < ISO_SECTOR_SIZE) {
+            iso_directory_record_t* rec = (iso_directory_record_t*)&buf[offset];
+            if (rec->length == 0) break; // Hết bản ghi trong sector này
+
+            vga_puts("  ", 0x07);
+            if (rec->file_id[0] == 0) vga_puts(".", 0x07);
+            else if (rec->file_id[0] == 1) vga_puts("..", 0x07);
+            else {
+                for (int i = 0; i < rec->file_id_length; i++) {
+                    if (rec->file_id[i] == ';') break; // Bỏ versioning
+                    vga_putc(rec->file_id[i], 0x0F);
+                }
+            }
+
+            // Phân biệt Folder/File bằng flags (bit 1)
+            if (rec->file_flags & 0x02) vga_puts(" [DIR]\n", 0x0B);
+            else vga_puts("\n", 0x07);
+
+            offset += rec->length;
+        }
+    }
+}
+
+/* --- PUBLIC API --- */
+
+uint32_t iso9660_get_size(const char* path) {
+    iso_directory_record_t rec;
+    if (find_file_record(path, &rec)) {
+        return rec.data_length;
+    }
+    return 0;
+}
+
+void* iso9660_read_file(const char* path, uint8_t* buffer, uint32_t* out_size) {
+    iso_directory_record_t rec;
+    
+    // SỬA: return NULL (hoặc 0) thay vì return trống
+    if (!find_file_record(path, &rec)) return 0;
+
+    uint32_t lba = rec.extent_lba;
+    uint32_t size = rec.data_length;
+    uint32_t sectors = (size + ISO_SECTOR_SIZE - 1) / ISO_SECTOR_SIZE;
+
+    // Gán size ra ngoài để hàm cat biết đường mà in
+    if (out_size) *out_size = size;
+
+    for (uint32_t i = 0; i < sectors; i++) {
+        atapi_read_sector(lba + i, buffer + (i * ISO_SECTOR_SIZE));
+    }
+
+    // SỬA: Trả về buffer chứa dữ liệu để f_ptr nhận được giá trị
+    return (void*)buffer;
 }

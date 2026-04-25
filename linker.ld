@@ -1,29 +1,32 @@
-ENTRY(start)                /* Điểm bắt đầu là label 'start' trong file asm */
+ENTRY(start)
 
 SECTIONS
 {
-    /* Kernel sẽ được load tại 1MB, đây là tiêu chuẩn cho Multiboot */
     . = 1M;
 
     .text BLOCK(4K) : ALIGN(4K)
     {
-        *(.multiboot)       /* Đảm bảo header multiboot nằm đầu file */
-        *(.text)            /* Code thực thi */
+        *(.multiboot)
+        *(.text)
     }
 
+    /* Gom tất cả dữ liệu Read-Only và các section binary từ objcopy */
     .rodata BLOCK(4K) : ALIGN(4K)
     {
-        *(.rodata)          /* Dữ liệu chỉ đọc (string, hằng số) */
+        *(.rodata*)
     }
 
     .data BLOCK(4K) : ALIGN(4K)
     {
-        *(.data)            /* Biến toàn cục đã khởi tạo */
+        *(.data*)  /* Thêm dấu * để gom cả .data.something nếu có */
     }
 
     .bss BLOCK(4K) : ALIGN(4K)
     {
         *(COMMON)
-        *(.bss)             /* Biến toàn cục chưa khởi tạo (và stack) */
+        *(.bss*)
     }
+    
+    /* Ghi lại điểm kết thúc của Kernel để tránh ghi đè stack/heap */
+    _kernel_end = .;
 }

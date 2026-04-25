@@ -17,30 +17,38 @@ SYS_BIOS = ./bios
 C_SOURCES = $(shell find src -name '*.c')
 C_OBJS = $(C_SOURCES:.c=.o)
 
-# CỐ ĐỊNH: entry.o phải là đối tượng đầu tiên
-KERNEL_OBJS = entry.o $(C_OBJS)
+# Font Asset
+FONT_PSF = src/assets/font.psf
+FONT_OBJ = font.o
+
+# CỐ ĐỊNH: entry.o phải đứng đầu, sau đó là font.o và các file C
+KERNEL_OBJS = entry.o src/interrupt.o $(FONT_OBJ) $(C_OBJS)
+
+# Tên file output
+INITRD_NAME = initrd-x86.tar
+# Thư mục chứa asset
+ASSETS_DIR = src/assets
 
 all: openyanase.iso
 
 # Chạy ISO với QEMU
 run: openyanase.iso
-	qemu-system-i386.exe -cdrom openyanase.iso -vga std -d guest_errors
-
-# ... (Giữ nguyên phần đầu cho đến openyanase.iso) ...
+	qemu-system-i386 -cdrom openyanase.iso -vga std -d guest_errors
 
 # Tạo file ISO khởi động với Syslinux
-openyanase.iso: mykernel.elf syslinux.cfg splash.bmp
+openyanase.iso: mykernel.elf $(INITRD_NAME) syslinux.cfg splash.png
 	mkdir -p iso_root/boot/isolinux
 	mkdir -p iso_root/apps
 	
 	# Copy Kernel và file cấu hình
 	cp mykernel.elf iso_root/boot/mykernel.elf
+	cp $(INITRD_NAME) iso_root/boot/$(INITRD_NAME)
 	cp syslinux.cfg iso_root/boot/isolinux/isolinux.cfg
 	
-	# --- THÊM DÒNG NÀY ĐỂ COPY ẢNH NỀN ---
+	# Copy ảnh nền
 	cp splash.png iso_root/boot/isolinux/
 	
-	# Copy các file module từ thư mục bios vào đúng folder isolinux
+	# Copy các file module từ thư mục bios
 	find $(SYS_BIOS) -name "mboot.c32" -exec cp {} iso_root/boot/isolinux/ \;
 	find $(SYS_BIOS) -name "libcom32.c32" -exec cp {} iso_root/boot/isolinux/ \;
 	find $(SYS_BIOS) -name "libutil.c32" -exec cp {} iso_root/boot/isolinux/ \;
@@ -54,23 +62,57 @@ openyanase.iso: mykernel.elf syslinux.cfg splash.bmp
 		-b boot/isolinux/isolinux.bin -c boot/isolinux/boot.cat \
 		-no-emul-boot -boot-load-size 4 -boot-info-table \
 		iso_root/
+		
+# Rule tạo initrd
+# Đảm bảo file được tạo ra ở thư mục hiện tại
 
-# ... (Phần còn lại giữ nguyên) ...
+# --- SỬA ĐỔI TRIỆT ĐỂ PHẦN INITRD ---
+$(INITRD_NAME):
+	@echo "[STAGE 1] Preparing assets in $(ASSETS_DIR)..."
+	@mkdir -p $(ASSETS_DIR)
+	
+	# Đảm bảo init.yc luôn tồn tại trước khi đóng gói
+	@if [ ! -f $(ASSETS_DIR)/init.yc ]; then \
+		echo "theme=bluearchive" > $(ASSETS_DIR)/init.yc; \
+		echo "core=openyanase-core.jar" >> $(ASSETS_DIR)/init.yc; \
+		echo "autostart=false" >> $(ASSETS_DIR)/init.yc; \
+		echo " [ OK ] Created new init.yc"; \
+	fi
 
-# Link Kernel - QUAN TRỌNG: Thứ tự nạp $(KERNEL_OBJS) đảm bảo entry.o đứng đầu
+	# Kiểm tra sự tồn tại của các file quan trọng khác (ví dụ font)
+	@if [ ! -f $(FONT_PSF) ]; then \
+		echo " [ WARN ] $(FONT_PSF) missing! GUI might fail."; \
+	fi
+
+	@echo "[TAR] Packaging assets into $(INITRD_NAME)..."
+	# -C src/assets giúp lấy file ở root của tar, không bị dính đường dẫn src/assets/ vào tên file
+	# find . -maxdepth 1 -type f lấy tất cả file (bao gồm init.yc, font.psf, .jar)
+	cd $(ASSETS_DIR) && find . -maxdepth 1 -type f | xargs tar -cvf ../../$(INITRD_NAME)
+	
+	@echo "[ DONE ] $(INITRD_NAME) generated."
+
+# Link Kernel
 mykernel.elf: $(KERNEL_OBJS)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
+
+# --- BƯỚC NHÚNG FONT PSF ---
+# Biến file .psf thành file .o có thể link được
+$(FONT_OBJ): $(FONT_PSF)
+	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
 
 # Biên dịch Assembly (entry.S)
 entry.o: src/entry.S
 	$(AS) $(ASFLAGS) -c $< -o $@
 
+src/interrupt.o: src/interrupt.S
+	x86_64-linux-gnu-gcc -m32 -c src/interrupt.S -o src/interrupt.o
+# ^^^ CHỖ NÀY PHẢI LÀ DẤU TAB, KHÔNG PHẢI SPACE!	
 # Biên dịch các file C
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -rf iso_root
-	rm -f $(shell find src -name '*.o') entry.o mykernel.elf openyanase.iso
+	rm -f $(shell find src -name '*.o') entry.o font.o mykernel.elf openyanase.iso $(INITRD_NAME)
 
 .PHONY: all run clean

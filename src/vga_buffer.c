@@ -22,6 +22,31 @@ static inline uint16_t vga_entry(char c, uint8_t color) {
     return (uint16_t)c | (uint16_t)color << 8;
 }
 
+void vga_backspace() {
+    // Giả sử biến của bạn là vga_x và vga_y (hãy đổi tên cho khớp với file của bạn)
+    if (cursor_x > 0) {
+        cursor_x--;
+    } else if (cursor_y > 0) {
+        cursor_y--;
+        cursor_y = 79; 
+    }
+
+    // Ghi đè khoảng trắng để xóa ký tự cũ
+    // Số 7 là mã màu Light Grey mặc định
+    vga_putc(' ', 7); 
+
+    // Lùi lại một lần nữa vì vga_putc vừa làm con trỏ tiến lên
+    if (cursor_x > 0) {
+        cursor_x--;
+    } else if (cursor_y > 0) {
+        cursor_y--;
+        cursor_y = 79; 
+    }
+    
+    // Cập nhật con trỏ phần cứng nếu bạn có hàm update_cursor
+    // update_cursor(); 
+}
+
 void vga_clear() {
     for (uint32_t i = 0; i < BUF_WIDTH * BUF_HEIGHT; i++) {
         vga_buffer[i] = vga_entry(' ', LIGHT_GREY);
